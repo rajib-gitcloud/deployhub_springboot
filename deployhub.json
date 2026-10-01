@@ -1,0 +1,18 @@
+{
+  "name": "deployhub_springboot",
+  "framework": "Spring Boot",
+  "category": "Backend - Java",
+  "runtime": "java",
+  "port": 8080,
+  "buildCommand": "mvn clean package -DskipTests",
+  "startCommand": "java -jar target/deployhub-springboot-1.0.0.jar",
+  "healthCheck": {
+    "path": "/api/health",
+    "expectedStatus": 200,
+    "timeoutSeconds": 15
+  },
+  "env": {
+    "PORT": "8080",
+    "SPRING_PROFILES_ACTIVE": "prod"
+  }
+}

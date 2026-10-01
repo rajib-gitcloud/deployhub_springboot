@@ -1,0 +1,10 @@
+.env
+.env.local
+target/
+*.class
+*.jar
+*.war
+.mvn/
+.idea/
+*.iml
+.DS_Store
