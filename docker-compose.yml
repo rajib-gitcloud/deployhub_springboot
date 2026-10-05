@@ -1,70 +1,130 @@
 services:
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-
-    container_name: myapp_frontend
-
+  redis:
+    image: redis:7-alpine
     ports:
-      - "3000:3000"
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
-    depends_on:
-      - backend
-
-    networks:
-      - myapp_network
-
-
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-
-    container_name: myapp_backend
-
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
     ports:
-      - "8000:8000"
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
     environment:
-      DB_HOST: database
-      DB_PORT: 5432
-      DB_NAME: myapp
-      DB_USER: myuser
-      DB_PASSWORD: mypassword
-
-    depends_on:
-      - database
-
-    networks:
-      - myapp_network
-
-
-  database:
-    image: postgres:16
-
-    container_name: myapp_database
-
-    environment:
-      POSTGRES_DB: myapp
-      POSTGRES_USER: myuser
-      POSTGRES_PASSWORD: mypassword
-
+      DB_HOST: ${PGBOUNCER_POSTGRESQL_HOST:-192.168.10.67}
+      DB_PORT: ${PGBOUNCER_POSTGRESQL_PORT:-5432}
+      DB_NAME: ${PGBOUNCER_POSTGRESQL_DATABASE:-excel_middleware}
+      DB_USER: ${PGBOUNCER_POSTGRESQL_USERNAME:-admin}
+      DB_PASSWORD: ${PGBOUNCER_POSTGRESQL_PASSWORD:-admin@123}
+      LISTEN_PORT: ${PGBOUNCER_LISTEN_PORT:-6432}
+      POOL_MODE: ${PGBOUNCER_POOL_MODE:-transaction}
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-500}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-5}
+      SERVER_IDLE_TIMEOUT: ${PGBOUNCER_SERVER_IDLE_TIMEOUT:-60}
+      SERVER_LIFETIME: ${PGBOUNCER_SERVER_LIFETIME:-3600}
+      AUTH_TYPE: ${PGBOUNCER_AUTH_TYPE:-plain}
     ports:
-      - "5432:5432"
+      - "6432:6432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U \"$${DB_USER}\" -d \"$${DB_NAME}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+  migrate:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile.api
+    command: alembic -c migrations/alembic.ini upgrade head
+    env_file: ../../.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+asyncpg://admin:admin%40123@pgbouncer:6432/excel_middleware}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      RABBITMQ_URL: ${RABBITMQ_URL_DOCKER:-amqp://guest:guest@rabbitmq:5672/}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
-    networks:
-      - myapp_network
+  sap-session:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile.api
+    command: uvicorn app.sap_session_service:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
+    env_file: ../../.env
+    environment:
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      RABBITMQ_URL: ${RABBITMQ_URL_DOCKER:-amqp://guest:guest@rabbitmq:5672/}
+      SAP_STARTUP_WARMUP_ENABLED: ${SAP_STARTUP_WARMUP_ENABLED:-false}
+      SAP_SESSION_KEEPALIVE_ENABLED: ${SAP_SESSION_KEEPALIVE_ENABLED:-true}
+      SAP_SESSION_KEEPALIVE_CHECK_SECONDS: ${SAP_SESSION_KEEPALIVE_CHECK_SECONDS:-60}
+      SAP_SESSION_KEEPALIVE_REFRESH_BEFORE_SECONDS: ${SAP_SESSION_KEEPALIVE_REFRESH_BEFORE_SECONDS:-300}
+    ports:
+    - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/health/live"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
-
-volumes:
-  postgres_data:
-
-
-networks:
-  myapp_network:
-    driver: bridge
+  api:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile.api
+    command: uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --workers 4
+    env_file: ../../.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+asyncpg://admin:admin%40123@pgbouncer:6432/excel_middleware}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-10}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      RABBITMQ_URL: ${RABBITMQ_URL_DOCKER:-amqp://guest:guest@rabbitmq:5672/}
+      SAP_SESSION_MANAGER_URL: ${SAP_SESSION_MANAGER_URL_DOCKER:-http://sap-session:8000}
+      SAP_STARTUP_WARMUP_ENABLED: ${SAP_STARTUP_WARMUP_ENABLED:-false}
+    ports:
+      - "8081:8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/api/v1/health/live"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      sap-session:
+        condition: service_healthy
