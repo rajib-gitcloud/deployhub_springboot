@@ -1,0 +1,70 @@
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+    container_name: myapp_frontend
+
+    ports:
+      - "3000:3000"
+
+    depends_on:
+      - backend
+
+    networks:
+      - myapp_network
+
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+
+    container_name: myapp_backend
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: myapp
+      DB_USER: myuser
+      DB_PASSWORD: mypassword
+
+    depends_on:
+      - database
+
+    networks:
+      - myapp_network
+
+
+  database:
+    image: postgres:16
+
+    container_name: myapp_database
+
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    networks:
+      - myapp_network
+
+
+volumes:
+  postgres_data:
+
+
+networks:
+  myapp_network:
+    driver: bridge
